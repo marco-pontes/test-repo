@@ -1,0 +1,49 @@
+# The lab federation's token workflow (plan 03.3-29, D-44; research L12). Copied by the owner
+# into the throwaway repository as .github/workflows/emit-id-tokens.yml and run by hand from the
+# Actions tab on `main` (workflow_dispatch only). It mints two GitHub Actions ID tokens for the
+# Project's audience, writes each to a file under `umask 077`, prints only their decoded claims,
+# and uploads the two files as one artifact kept for a day. The owner downloads it on the Mac
+# and runs `vivid_cloud_federated_deploy.py deploy` at once (a token lives about five minutes).
+#
+# Nothing here prints a token: the tokens go from curl through jq straight to a file, the claims
+# are decoded from the file's middle part with cut, base64 -d and jq -S, and shell tracing stays
+# off. No third-party action mints a token; the one action, upload-artifact, is pinned by commit
+# SHA (specs/stack.md section 8). tests/repo/test_github_federation_workflows.py holds all of it.
+name: emit-id-tokens
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+
+jobs:
+  emit:
+    runs-on: ubuntu-latest
+    environment: vivid-lab
+    steps:
+      - name: Mint two ID tokens for the Project's audience
+        env:
+          AUDIENCE: vivid-cloud-sts:${{ vars.VIVID_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          dir="$RUNNER_TEMP/vivid-id-tokens"
+          mkdir -p "$dir"
+          curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value > "$dir/exchange-1.jwt"
+          curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value > "$dir/exchange-2.jwt"
+          claims() {
+            payload="$(cut -d. -f2 "$1" | tr '_-' '/+')"
+            case $(( ${#payload} % 4 )) in 2) payload="${payload}==" ;; 3) payload="${payload}=" ;; esac
+            printf '%s' "$payload" | base64 -d | jq -S .
+          }
+          claims "$dir/exchange-1.jwt"
+          claims "$dir/exchange-2.jwt"
+      - name: Upload the two token files, kept for one day
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vivid-id-tokens
+          path: ${{ runner.temp }}/vivid-id-tokens/
+          retention-days: 1
+          if-no-files-found: error
