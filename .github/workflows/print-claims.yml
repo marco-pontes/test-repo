@@ -1,0 +1,40 @@
+# The lab federation's claims workflow (plan 03.3-29; research L4). Copied by the owner into the
+# throwaway repository as .github/workflows/print-claims.yml. On a push to any branch and on a
+# pull request it mints one ID token for the probe audience `vivid-claims-probe`, which no
+# Project's exchange accepts (the exchange takes only `vivid-cloud-sts:<prj_id>`), and prints
+# its decoded claims. Those claim sets become the recorded fixtures under
+# cloud-backend/tests/fixtures/recorded_claims/.
+#
+# `pull_request_target` runs in the base repository's context, so this file takes nothing from
+# the event: it checks nothing out, uploads nothing, and no `run:` interpolates an expression.
+# The token goes from curl through jq to a file and only its middle part is decoded; shell
+# tracing stays off. tests/repo/test_github_federation_workflows.py holds all of it.
+name: print-claims
+
+on:
+  push:
+    branches: ["**"]
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  id-token: write
+
+jobs:
+  claims:
+    runs-on: ubuntu-latest
+    environment: vivid-lab
+    steps:
+      - name: Print the claims of a probe-audience ID token
+        env:
+          AUDIENCE: vivid-claims-probe
+        run: |
+          set -euo pipefail
+          set +x
+          umask 077
+          file="$RUNNER_TEMP/probe.jwt"
+          curl -sSf -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${AUDIENCE}" | jq -r .value > "$file"
+          payload="$(cut -d. -f2 "$file" | tr '_-' '/+')"
+          case $(( ${#payload} % 4 )) in 2) payload="${payload}==" ;; 3) payload="${payload}=" ;; esac
+          printf '%s' "$payload" | base64 -d | jq -S .
+          rm -f "$file"
